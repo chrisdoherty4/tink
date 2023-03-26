@@ -13,6 +13,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.9.4
 	github.com/onsi/gomega v1.27.6
 	github.com/opencontainers/image-spec v1.1.0-rc.3
+	github.com/peterbourgon/ff/v3 v3.3.1
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.15.0
 	github.com/spf13/cobra v1.7.0
