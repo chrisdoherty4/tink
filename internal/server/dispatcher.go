@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tinkerbell/tink/api/v1alpha2"
 	"github.com/tinkerbell/tink/internal/server/index"
 	"github.com/tinkerbell/tink/internal/workflow"
+	apimwatch "k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 )
@@ -21,35 +23,10 @@ type WorkflowDispatcher struct {
 }
 
 func (d WorkflowDispatcher) Handle(ctx context.Context, agentID string, agent Agent) error {
-	// Find Workflows this agent could run.
-	// Dispatch Workflow
-	// Watch Workflow for cancellation or end state
-
-	wrkflw, err := d.findInFlightWorkflow(ctx, agentID)
-	if err != nil {
-		return err
-	}
-
-	if wrkflw != nil {
-		d.monitor(ctx, wrkflw)
-	}
-
 	wrkflw, err := d.findNextWorkflow(ctx, agentID)
 	if err != nil {
 		return err
 	}
-
-	if err := agent.RunWorkflow(ctx, toWorkflow(wrkflw)); err != nil {
-		return err
-	}
-
-	d.monitor(ctx, wrkflw)
-	await(ctx, d.client, func(o client.Object) bool {
-		wrkflw := o.(*v1alpha2.Workflow)
-		if wrkflow.Status.State
-	}, func(o client.Object) {
-		d.
-	})
 
 	return nil
 }
@@ -79,7 +56,22 @@ func (d WorkflowDispatcher) findInFlightWorkflow(ctx context.Context, agentID st
 	return nil, nil
 }
 
-func (d WorkflowDispatcher) findNextWorkflow(ctx context.Context, agentID string) (*v1alpha2.Workflow, error) {
+func (d WorkflowDispatcher) FindNextWorkflow(ctx context.Context, agentID string) (*v1alpha2.Workflow, error) {
+	var wl v1alpha2.WorkflowList
+	watch, err := d.client.Watch(ctx, &wl, client.MatchingFields{
+		index.WorkflowAgentID: agentID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing workflows: %w", err)
+	}
+
+	for {
+		select {
+		case ev := <-watch.ResultChan():
+			fmt.Println(ev)
+		}
+	}
+
 	return nil, nil
 }
 
@@ -91,6 +83,26 @@ func toWorkflow(*v1alpha2.Workflow) workflow.Workflow {
 	return workflow.Workflow{}
 }
 
-func await(ctx context.Context, clnt client.WithWatch, cond func(o client.Object) bool, do func(o client.Object)) error {
+func await(ctx context.Context, clnt client.WithWatch, fn func(o client.Object) error, listOpts ...client.ListOption) error {
+
+	watch, err := clnt.Watch(ctx, &v1alpha2.WorkflowList{}, listOpts...)
+	if err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev := <-watch.ResultChan():
+			switch ev.Type {
+			case apimwatch.Added, apimwatch.Deleted, apimwatch.Modified:
+				if err := fn(ev.Object); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	return nil
 }

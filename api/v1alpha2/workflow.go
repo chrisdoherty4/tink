@@ -27,6 +27,9 @@ type WorkflowSpec struct {
 }
 
 type WorkflowStatus struct {
+	// AgentID is used to associate this Workflow with a particular Tink Agent instance.
+	AgentID string
+
 	// Actions is a list of action states.
 	Actions []ActionStatus `json:"actions"`
 

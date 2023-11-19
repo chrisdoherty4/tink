@@ -8,6 +8,9 @@ import (
 // WorkflowState indexes a Workflow object on the .Status.State field.
 var WorkflowState = ".Status.State"
 
+// WorkflowAgentID indexes a Workflow by the .Status.AgentID field.
+var WorkflowAgentID = ".Status.AgentID"
+
 // WorkflowStateUnderway is a hybrid state indicating a Workflow is either Scheduled or Running.
 // It is useful for listening Workflows efficiently using the WorkflowState index.
 var WorkflowStateUnderway = "Underway"
@@ -24,4 +27,14 @@ func WorkflowStateFn(o client.Object) []string {
 	}
 
 	return states
+}
+
+// WorkflowAgentIDFn is the indexing function for the WorkflowAgentID index.
+func WorkflowAgentIDFn(o client.Object) []string {
+	w, ok := o.(*v1alpha2.Workflow)
+	if !ok {
+		return []string{}
+	}
+
+	return []string{w.Status.AgentID}
 }

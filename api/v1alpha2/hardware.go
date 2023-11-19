@@ -34,6 +34,13 @@ type HardwareSpec struct {
 	// BMCRef references a Rufio Machine object.
 	// +optional.
 	BMCRef *corev1.LocalObjectReference `json:"bmcRef,omitempty"`
+
+	// ID is an identifier that uniquely identifies Hardware within a Cluster. Operators do not
+	// need to set this. It will be populated by the system when the resource is submitted to the
+	// cluster. If an operator decides to populate it, it must be unique within the entire cluster.
+	// Non-unique values invoke undefined behavior.
+	// +optional
+	ID string
 }
 
 // NetworkInterfaces maps a MAC address to a NetworkInterface.
