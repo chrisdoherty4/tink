@@ -18,7 +18,7 @@ type WorkflowMonitor interface {
 }
 
 type WorkflowDispatcher struct {
-	provider Cache
+	provider WorkflowProvider
 }
 
 func (d WorkflowDispatcher) Handle(ctx context.Context, agentID string, agent Agent) error {

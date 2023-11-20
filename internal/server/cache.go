@@ -1,96 +1,105 @@
 package server
 
 import (
-	"container/heap"
 	"context"
-	"fmt"
+	"sync"
 
+	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
 	"github.com/tinkerbell/tink/api/v1alpha2"
 	"github.com/tinkerbell/tink/internal/workflow"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apimwatch "k8s.io/apimachinery/pkg/watch"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type Cache struct {
+type WorkflowProvider struct {
+	mu        sync.Mutex
 	workflows map[string][]*v1alpha2.Workflow
+	observers map[string]<-chan workflow.Workflow
+	client    client.WithWatch
+	log       logr.Logger
 }
 
-func (c *Cache) GetNext(ctx context.Context, agentID string) (workflow.Workflow, WorkflowMonitor, error) {
-	return workflow.Workflow{}, nil, nil
-}
-
-type workflowPriorityQueue struct {
-	queue []*v1alpha2.Workflow
-}
-
-func (pq workflowPriorityQueue) Len() int { return len(pq) }
-
-func (pq workflowPriorityQueue) Less(i, j int) bool {
-	// We want Pop to give us the highest, not lowest, priority so we use greater than here.
-	return pq[i].priority > pq[j].priority
-}
-
-func (pq workflowPriorityQueue) Swap(i, j int) {
-	pq[i], pq[j] = pq[j], pq[i]
-	pq[i].index = i
-	pq[j].index = j
-}
-
-func (pq *workflowPriorityQueue) Push(x any) {
-	n := len(*pq)
-	item := x.(*Item)
-	item.index = n
-	*pq = append(*pq, item)
-}
-
-func (pq *workflowPriorityQueue) Pop() any {
-	old := *pq
-	n := len(old)
-	item := old[n-1]
-	old[n-1] = nil  // avoid memory leak
-	item.index = -1 // for safety
-	*pq = old[0 : n-1]
-	return item
-}
-
-// update modifies the priority and value of an Item in the queue.
-func (pq *workflowPriorityQueue) update(item *Item, value string, priority int) {
-	item.value = value
-	item.priority = priority
-	heap.Fix(pq, item.index)
-}
-
-// This example creates a workflowPriorityQueue with some items, adds and manipulates an item,
-// and then removes the items in priority order.
-func main() {
-	// Some items and their priorities.
-	items := map[string]int{
-		"banana": 3, "apple": 2, "pear": 4,
+func (wp *WorkflowProvider) Start(ctx context.Context) error {
+	var wl v1alpha2.WorkflowList
+	watch, err := wp.client.Watch(ctx, &wl)
+	if err != nil {
+		return err
 	}
+	defer watch.Stop()
 
-	// Create a priority queue, put the items in it, and
-	// establish the priority queue (heap) invariants.
-	pq := make(workflowPriorityQueue, len(items))
-	i := 0
-	for value, priority := range items {
-		pq[i] = &Item{
-			value:    value,
-			priority: priority,
-			index:    i,
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-watch.ResultChan():
+			if !ok {
+				return errors.New("watch channel unexpectedly closed")
+			}
+			// Convert runtime.Object to client.Object (controller runtime)
+			wf, ok := ev.Object.(*v1alpha2.Workflow)
+			if !ok {
+				// TODO(chrisdoherty4) Handle error, probably a log event.
+				_ = ok
+			}
+
+			wp.mu.Lock()
+			switch ev.Type {
+			case apimwatch.Added:
+				agentID := wf.Status.AgentID
+
+				if _, exists := wp.workflows[agentID]; !exists {
+					wp.workflows[agentID] = make([]*v1alpha2.Workflow, 0, 1)
+				}
+
+				wp.workflows[agentID] = append(wp.workflows[agentID], wf)
+			case apimwatch.Modified:
+				wp.log.Info("Received modified object", "obj", ev.Object.(metav1.Object).GetName())
+			}
+			wp.mu.Unlock()
 		}
-		i++
 	}
-	heap.Init(&pq)
+}
 
-	// Insert a new item and then modify its priority.
-	item := &Item{
-		value:    "orange",
-		priority: 1,
+func (wp *WorkflowProvider) GetNext(ctx context.Context, agentID string) (workflow.Workflow, WorkflowMonitor, error) {
+	// Lock mu
+	// Check for workflows for the agentID
+	// If none register an observer
+	// Unlock mu
+	// Listen for workflows.
+
+	wp.mu.Lock()
+
+	// TODO(chrisdoherty4) Ensure the mutex also protects the arrays in the cache. We can probably optimize
+	// to unlock the map and protect against the queue only freeing up the cache for other threads.
+	q, exists := wp.workflows[agentID]
+	if exists && len(q) > 0 {
+		wf := q[0]
+		q = q[1:]
+		wp.workflows[agentID] = q
+		wp.mu.Unlock()
+		return toWorkflow(wf), nil, nil
 	}
-	heap.Push(&pq, item)
-	pq.update(item, item.value, 5)
 
-	// Take the items out; they arrive in decreasing priority order.
-	for pq.Len() > 0 {
-		item := heap.Pop(&pq).(*Item)
-		fmt.Printf("%.2d:%s ", item.priority, item.value)
+	// There aren't any Workflows so we need to register an observer.
+	recv := make(chan workflow.Workflow)
+	wp.observers[agentID] = recv
+
+	wp.mu.Unlock()
+
+	// TODO(chrisdoherty4) Separate Workflow mutex from Observer mutex because we don't need to hold up the
+	// workflow mutex when we unregister the observer.
+	defer func() {
+		wp.mu.Lock()
+		defer wp.mu.Unlock()
+		delete(wp.observers, agentID)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return workflow.Workflow{}, nil, ctx.Err()
+	case wf := <-recv:
+		return wf, nil, nil
 	}
 }
